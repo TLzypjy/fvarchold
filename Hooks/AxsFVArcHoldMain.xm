@@ -3,6 +3,7 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <mach-o/dyld.h>
+#import <dlfcn.h>
 #import <unistd.h>
 #import "AxsFVArcHoldConfig.h"
 #import "AxsFVArcHoldPrivate.h"
@@ -473,43 +474,45 @@ static void axs_logFloatingViewImages(void) {
                       hits.count ? [hits componentsJoinedByString:@" | "] : @"none");
 }
 
-static void axs_waitAndHook(void) {
-    axs_fvarchold_log(@"ctor process: pid=%d bundle=%@",
-                      (int)getpid(),
-                      [[NSBundle mainBundle] bundleIdentifier] ?: @"?");
-    axs_logFloatingViewImages();
+// v1.0.2: 类发现改为“floatingView 镜像加载后做一次扫描”，绝不在启动期反复全量扫描。
+static int axs_hookAttempts = 0;
 
-    for (int i = 0; i < 120; i++) {
-        Class cls = axs_findClassByFragment("FVArcTerraceItem", NO);
-        if (cls) {
-            Class container = axs_findClassByFragment("FVArcContainerView", NO);
-            if (container) {
-                // 仅用于日志确认
-                axs_fvarchold_log(@"container class present: %s", class_getName(container));
-            }
-            dispatch_async(dispatch_get_main_queue(), ^{
-                axs_hookTerraceClass(cls);
-            });
-            return;
-        }
-        usleep(1000 * 1000);
+static void axs_tryHookOnce(void) {
+    if (axs_hookAttempts >= 6) return;
+    axs_hookAttempts++;
+    Class cls = axs_findClassByFragment("FVArcTerraceItem", axs_hookAttempts >= 4);
+    if (cls) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            axs_hookTerraceClass(cls);
+        });
+        return;
     }
-    // 超时：一次性输出诊断
-    axs_fvarchold_log(@"TIMEOUT waiting for FVArcTerraceItem, dumping diagnostics");
-    axs_logFloatingViewImages();
-    axs_findClassByFragment("FVArc", YES);
-    axs_findClassByFragment("FVSideBar", YES);
-    unsigned int imgCount = _dyld_image_count();
-    NSMutableArray *tweaks = [NSMutableArray array];
-    for (uint32_t i = 0; i < imgCount; i++) {
-        const char *path = _dyld_get_image_name(i);
-        if (path && (strstr(path, "DynamicLibraries") || strstr(path, "TweakInject") || strstr(path, "MobileSubstrate"))) {
-            [tweaks addObject:[[NSString stringWithUTF8String:path] lastPathComponent]];
-        }
+    if (axs_hookAttempts < 6) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            axs_tryHookOnce();
+        });
+    } else {
+        axs_fvarchold_log(@"scan attempts exhausted, dumping diagnostics");
+        axs_logFloatingViewImages();
+        axs_findClassByFragment("FVArc", YES);
     }
-    axs_fvarchold_log(@"tweak dylibs loaded (%lu): %@",
-                      (unsigned long)tweaks.count,
-                      tweaks.count ? [tweaks componentsJoinedByString:@", "] : @"none");
+}
+
+static void axs_imageAddedCallback(const struct mach_header *mh, intptr_t vmaddr_slide) {
+    Dl_info info;
+    if (!dladdr((const void *)mh, &info) || !info.dli_fname) return;
+    if (!strstr(info.dli_fname, "floatingView.dylib")) return;
+    axs_fvarchold_log(@"floatingView image loaded: %s", info.dli_fname);
+    // 类注册在镜像加载后立即完成，稍等一拍再扫（只扫很少几次）
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        axs_tryHookOnce();
+    });
+}
+
+static BOOL axs_disabledByFile(void) {
+    return access("/var/mobile/Library/FVArcHold/DISABLED", F_OK) == 0;
 }
 
 #pragma mark - 入口
@@ -527,12 +530,30 @@ static void axs_preferencesChangedCB(CFNotificationCenterRef center, void *obser
 
 %ctor {
     @autoreleasepool {
+        if (axs_disabledByFile()) {
+            axs_fvarchold_log(@"DISABLED file present, doing nothing");
+            return;
+        }
         axs_liveTerraces = [NSHashTable weakObjectsHashTable];
 
-        // 等 floatingView 注入后 hook（轮询 + 诊断，超时后输出已加载模块与类名）
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
-            axs_waitAndHook();
-        });
+        // floatingView 若在本 tweak 之前已加载，直接安排一次扫描；否则等镜像回调。
+        BOOL alreadyLoaded = NO;
+        for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+            const char *path = _dyld_get_image_name(i);
+            if (path && strstr(path, "floatingView.dylib")) {
+                alreadyLoaded = YES;
+                break;
+            }
+        }
+        if (alreadyLoaded) {
+            axs_fvarchold_log(@"floatingView already loaded at ctor");
+            dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+                           dispatch_get_main_queue(), ^{
+                axs_tryHookOnce();
+            });
+        } else {
+            _dyld_register_func_for_add_image(axs_imageAddedCallback);
+        }
 
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
             NULL, axs_preferencesChangedCB,
