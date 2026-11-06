@@ -415,8 +415,7 @@ static id axs_new_initWithCoder(id self, SEL _cmd, id coder) {
     return r;
 }
 
-static void axs_hookTerraceClass(void) {
-    Class cls = objc_getClass("FVArcTerraceItem");
+static void axs_hookTerraceClass(Class cls) {
     if (!cls) return;
 
     SEL frameSel = @selector(initWithFrame:);
@@ -431,7 +430,92 @@ static void axs_hookTerraceClass(void) {
         axs_orig_initWithCoder = (id (*)(id, SEL, id))method_getImplementation(m);
         method_setImplementation(m, (IMP)axs_new_initWithCoder);
     }
-    axs_fvarchold_log(@"hooked FVArcTerraceItem init");
+    axs_fvarchold_log(@"hooked %@ init", class_getName(cls));
+}
+
+#pragma mark - 诊断与类发现
+
+static BOOL axs_nameHasSuffix(const char *name, const char *suffix) {
+    if (!name || !suffix) return NO;
+    size_t len = strlen(name);
+    size_t slen = strlen(suffix);
+    return len > slen && strcmp(name + len - slen, suffix) == 0;
+}
+
+// 列出运行时所有名字包含 needle 的类（roothide 可能给类名加随机前缀，按包含/后缀匹配）
+static Class axs_findClassByFragment(const char *fragment, BOOL logAll) {
+    unsigned int count = 0;
+    Class *classes = objc_copyClassList(&count);
+    Class found = nil;
+    NSMutableArray *hits = [NSMutableArray array];
+    for (unsigned int i = 0; i < count; i++) {
+        const char *name = class_getName(classes[i]);
+        if (!name) continue;
+        if (strstr(name, fragment)) {
+            if (!found) found = classes[i];
+            if ([hits count] < 12) {
+                [hits addObject:[NSString stringWithUTF8String:name]];
+            }
+        }
+    }
+    if (classes) free(classes);
+    if (logAll && hits.count) {
+        axs_fvarchold_log(@"classes matching '%s': %@", fragment, [hits componentsJoinedByString:@", "]);
+    }
+    return found;
+}
+
+static void axs_logFloatingViewImages(void) {
+    NSMutableArray *hits = [NSMutableArray array];
+    for (uint32_t i = 0; i < _dyld_image_count(); i++) {
+        const char *path = _dyld_get_image_name(i);
+        if (path && strstr(path, "floatingView")) {
+            [hits addObject:[NSString stringWithUTF8String:path]];
+        }
+    }
+    axs_fvarchold_log(@"loaded floatingView images (%lu): %@",
+                      (unsigned long)hits.count,
+                      hits.count ? [hits componentsJoinedByString:@" | "] : @"none");
+}
+
+static void axs_waitAndHook(void) {
+    id app = [UIApplication sharedApplication];
+    axs_fvarchold_log(@"ctor process: pid=%d bundle=%@",
+                      (int)getpid(),
+                      [[NSBundle mainBundle] bundleIdentifier] ?: @"?");
+    axs_logFloatingViewImages();
+
+    for (int i = 0; i < 120; i++) {
+        Class cls = axs_findClassByFragment("FVArcTerraceItem", NO);
+        if (cls) {
+            Class container = axs_findClassByFragment("FVArcContainerView", NO);
+            if (container) {
+                // 仅用于日志确认
+                axs_fvarchold_log(@"container class present: %s", class_getName(container));
+            }
+            dispatch_async(dispatch_get_main_queue(), ^{
+                axs_hookTerraceClass(cls);
+            });
+            return;
+        }
+        usleep(1000 * 1000);
+    }
+    // 超时：一次性输出诊断
+    axs_fvarchold_log(@"TIMEOUT waiting for FVArcTerraceItem, dumping diagnostics");
+    axs_logFloatingViewImages();
+    axs_findClassByFragment("FVArc", YES);
+    axs_findClassByFragment("FVSideBar", YES);
+    unsigned int imgCount = _dyld_image_count();
+    NSMutableArray *tweaks = [NSMutableArray array];
+    for (uint32_t i = 0; i < imgCount; i++) {
+        const char *path = _dyld_get_image_name(i);
+        if (path && (strstr(path, "DynamicLibraries") || strstr(path, "TweakInject") || strstr(path, "MobileSubstrate"))) {
+            [tweaks addObject:[[NSString stringWithUTF8String:path] lastPathComponent]];
+        }
+    }
+    axs_fvarchold_log(@"tweak dylibs loaded (%lu): %@",
+                      (unsigned long)tweaks.count,
+                      tweaks.count ? [tweaks componentsJoinedByString:@", "] : @"none");
 }
 
 #pragma mark - 入口
@@ -451,19 +535,9 @@ static void axs_preferencesChangedCB(CFNotificationCenterRef center, void *obser
     @autoreleasepool {
         axs_liveTerraces = [NSHashTable weakObjectsHashTable];
 
-        // 等 floatingView 注入后 hook（其 dylib 与本 tweak 同为 SpringBoard filter，
-        // 加载顺序不保证，轮询等待类出现）。
+        // 等 floatingView 注入后 hook（轮询 + 诊断，超时后输出已加载模块与类名）
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_DEFAULT, 0), ^{
-            for (int i = 0; i < 120; i++) {
-                if (objc_getClass("FVArcTerraceItem")) {
-                    dispatch_async(dispatch_get_main_queue(), ^{
-                        axs_hookTerraceClass();
-                    });
-                    return;
-                }
-                usleep(250 * 1000);
-            }
-            axs_fvarchold_log(@"gave up waiting for FVArcTerraceItem (floatingView installed?)");
+            axs_waitAndHook();
         });
 
         CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
