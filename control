@@ -1,0 +1,9 @@
+Package: com.axs.fvarchold
+Name: FV Arc 长按全屏
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: floatingView 伴生：ARC 菜单长按松手全屏打开（快速松手仍为分屏）。依赖 com.be-huge.floating-view。
+Maintainer: Axs
+Author: Axs
+Section: Axs-Tweaks
+Depends: mobilesubstrate, com.be-huge.floating-view

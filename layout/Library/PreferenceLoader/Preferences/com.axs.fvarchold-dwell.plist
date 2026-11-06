@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Filter</key>
+	<dict>
+		<key>Bundles</key>
+		<array>
+			<string>com.apple.Preferences</string>
+		</array>
+	</dict>
+	<key>entry</key>
+	<dict>
+		<key>cell</key>
+		<string>PSSliderCell</string>
+		<key>label</key>
+		<string>FV Arc 全屏停留秒数</string>
+		<key>key</key>
+		<string>dwell</string>
+		<key>defaults</key>
+		<string>com.axs.fvarchold</string>
+		<key>default</key>
+		<real>0.5</real>
+		<key>min</key>
+		<real>0.1</real>
+		<key>max</key>
+		<real>2</real>
+		<key>showValue</key>
+		<true/>
+		<key>interval</key>
+		<real>0.05</real>
+		<key>PostNotification</key>
+		<string>com.axs.fvarchold-prefs-changed</string>
+	</dict>
+</dict>
+</plist>
