@@ -437,13 +437,6 @@ static void axs_hookTerraceClass(Class cls) {
 
 #pragma mark - 诊断与类发现
 
-static BOOL axs_nameHasSuffix(const char *name, const char *suffix) {
-    if (!name || !suffix) return NO;
-    size_t len = strlen(name);
-    size_t slen = strlen(suffix);
-    return len > slen && strcmp(name + len - slen, suffix) == 0;
-}
-
 // 列出运行时所有名字包含 needle 的类（roothide 可能给类名加随机前缀，按包含/后缀匹配）
 static Class axs_findClassByFragment(const char *fragment, BOOL logAll) {
     unsigned int count = 0;
