@@ -2,6 +2,8 @@
 #import <Foundation/Foundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
+#import <mach-o/dyld.h>
+#import <unistd.h>
 #import "AxsFVArcHoldConfig.h"
 #import "AxsFVArcHoldPrivate.h"
 
