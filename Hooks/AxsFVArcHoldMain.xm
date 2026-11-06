@@ -481,7 +481,6 @@ static void axs_logFloatingViewImages(void) {
 }
 
 static void axs_waitAndHook(void) {
-    id app = [UIApplication sharedApplication];
     axs_fvarchold_log(@"ctor process: pid=%d bundle=%@",
                       (int)getpid(),
                       [[NSBundle mainBundle] bundleIdentifier] ?: @"?");
